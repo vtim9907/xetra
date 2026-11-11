@@ -1,0 +1,50 @@
+# 每天 03:00 用 pg_dump 備份整個資料庫到獨立的 pg-backup PVC，保留 14 天。
+# 還原方式見 DEPLOY.md「資料備份與還原」一節。
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: pg-backup
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 10Gi
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: pg-backup
+spec:
+  schedule: "0 3 * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          restartPolicy: Never
+          containers:
+            - name: pg-dump
+              image: postgres:16-alpine
+              env:
+                - name: PGPASSWORD
+                  valueFrom:
+                    secretKeyRef:
+                      name: artex-secrets
+                      key: POSTGRES_PASSWORD
+              command: ["/bin/sh", "-c"]
+              args:
+                - |
+                  set -eu
+                  f="/backup/artex-$(date +%Y%m%d-%H%M%S).sql.gz"
+                  pg_dump --clean --if-exists -h postgres -U artex artex | gzip > "$f"
+                  echo "backup written: $(ls -lh "$f")"
+                  find /backup -name 'artex-*.sql.gz' -mtime +14 -delete
+              volumeMounts:
+                - name: backup
+                  mountPath: /backup
+          volumes:
+            - name: backup
+              persistentVolumeClaim:
+                claimName: pg-backup

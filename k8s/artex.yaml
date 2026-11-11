@@ -1,0 +1,99 @@
+# ARTEX 主程式：Deployment（1 份）+ Service + 兩顆 PVC。
+#
+# 第一次使用前，把下面 image: 的 CHANGE_ME 整段改成你 Harbor 上的路徑，例如
+#   image: harbor.example.com/library/artex:init
+# 之後的日常更新都走 k8s/update.sh（kubectl set image），不需要再改這個檔。
+# 注意：若日後重新 kubectl apply 本檔，image 會被檔案裡的值蓋回去，
+# apply 完再跑一次 update.sh 即可。
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: artex-data
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 20Gi
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: artex-keys
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 1Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: artex
+spec:
+  replicas: 1          # ARTEX 有本地狀態（/app/data）與單實例引擎，永遠保持 1
+  strategy:
+    type: Recreate     # PVC 是 ReadWriteOnce：先停舊 Pod 再起新 Pod，避免兩份搶同一顆 volume
+  selector:
+    matchLabels:
+      app: artex
+  template:
+    metadata:
+      labels:
+        app: artex
+    spec:
+      imagePullSecrets:
+        - name: harbor-pull
+      containers:
+        - name: artex
+          image: CHANGE_ME.example.com/library/artex:init
+          ports:
+            - containerPort: 8787   # Web UI / API
+            - containerPort: 8788   # 流量側錄代理（只供叢集內/本機使用，不要開到外網）
+          env:
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: artex-secrets
+                  key: POSTGRES_PASSWORD
+            # $(POSTGRES_PASSWORD) 是 k8s 的依賴展開；密碼請用純英數
+            # （含 @ : / 等符號會弄壞 DSN 的 URL 格式）
+            - name: ARTEX_PG_DSN
+              value: postgres://artex:$(POSTGRES_PASSWORD)@postgres:5432/artex?sslmode=disable
+            - name: ARTEX_JWT_KEY_DIR
+              value: /app/keys
+            - name: ANTHROPIC_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: artex-secrets
+                  key: ANTHROPIC_API_KEY
+                  optional: true   # 也可以之後在 UI 裡設定
+          readinessProbe:
+            httpGet:
+              path: /api/health
+              port: 8787
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 3
+          volumeMounts:
+            - name: data
+              mountPath: /app/data
+            - name: keys
+              mountPath: /app/keys
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: artex-data
+        - name: keys
+          persistentVolumeClaim:
+            claimName: artex-keys
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: artex
+spec:
+  selector:
+    app: artex
+  ports:
+    - port: 8787
+      targetPort: 8787

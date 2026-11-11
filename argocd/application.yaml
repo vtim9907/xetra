@@ -1,0 +1,29 @@
+# ArgoCD Application：告訴 ArgoCD「盯著這個 repo 的 k8s/ 目錄，同步到 artex namespace」。
+# 這個檔放在 argocd/（不在 k8s/ 裡），避免 ArgoCD 同步到它自己。
+#
+# 註冊方式二選一：
+#   a) 有 argocd CLI/UI 權限：kubectl apply -f argocd/application.yaml -n argocd
+#      （或在 ArgoCD UI 的 New App 填同樣的內容）
+#   b) 沒權限：把這個檔交給平台組，請他們幫你註冊
+#
+# 記得把 repoURL 換成你們內部 GitLab 上這個專案的網址。
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: artex
+  namespace: argocd
+spec:
+  project: default            # 平台組若有指定 project，照他們的填
+  source:
+    repoURL: https://gitlab.<你們的網域>/<group>/<repo>.git
+    targetRevision: main
+    path: k8s
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: artex
+  syncPolicy:
+    automated:
+      prune: false            # 先關：repo 刪檔不會自動刪叢集資源，新手較安全
+      selfHeal: true          # 叢集被手動改動時自動改回 git 的狀態
+    syncOptions:
+      - CreateNamespace=true

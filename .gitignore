@@ -68,3 +68,6 @@ posture-runs/
 
 # benchmark runner output (one dir per run)
 benchmark-results/
+
+# local graphify analysis output
+graphify-out/

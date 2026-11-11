@@ -1,0 +1,82 @@
+# GitLab CI：測試 → build image 推 Harbor → 把新 tag 寫回 k8s/artex.yaml（ArgoCD 會接手部署）
+#
+# 需要先在 GitLab 的 Settings → CI/CD → Variables 設定（都勾 Masked，PUSH_TOKEN 勾 Protected）：
+#   HARBOR_HOST      例如 harbor.example.com
+#   HARBOR_PROJECT   例如 library
+#   HARBOR_USER      Harbor robot account 名稱（robot$xxx）
+#   HARBOR_PASSWORD  robot account 密碼
+#   PUSH_TOKEN       本專案的 Project Access Token（role: Developer、scope: write_repository），
+#                    讓 bump-manifest job 能把 tag 變更 commit 回 repo
+stages: [test, build, deploy]
+
+variables:
+  IMAGE: $HARBOR_HOST/$HARBOR_PROJECT/artex
+
+test-go:
+  stage: test
+  image: golang:1.26-bookworm
+  cache:
+    key: go-mod
+    paths: [.go-mod-cache]
+  variables:
+    GOMODCACHE: $CI_PROJECT_DIR/.go-mod-cache
+  script:
+    - go vet ./...
+    - go test ./...        # 沒設定資料庫 DSN 時，需要 Postgres 的測試會自動跳過
+  rules:
+    - if: $CI_COMMIT_BRANCH
+
+test-web:
+  stage: test
+  image: node:22-bookworm-slim
+  script:
+    - cd web && npm ci --ignore-scripts && npm run check
+  rules:
+    - if: $CI_COMMIT_BRANCH
+
+# 預設用 Docker-in-Docker build。若你們的 runner 不開放 dind（privileged），
+# 把這個 job 換成檔案最下方註解的 kaniko 版本。
+build-image:
+  stage: build
+  image: docker:27
+  services: [docker:27-dind]
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+  script:
+    - docker login -u "$HARBOR_USER" -p "$HARBOR_PASSWORD" "$HARBOR_HOST"
+    - docker build --build-arg ARTEX_VERSION="$CI_COMMIT_SHORT_SHA"
+        -t "$IMAGE:$CI_COMMIT_SHORT_SHA" .
+    - docker push "$IMAGE:$CI_COMMIT_SHORT_SHA"
+
+# GitOps 關鍵一步：image tag 的「真相」在 git 裡（k8s/artex.yaml），
+# 所以 CI 把新 tag 寫回檔案並 commit，ArgoCD 看到變更才會部署。
+# [skip ci] 避免這個 commit 又觸發一條新 pipeline。
+bump-manifest:
+  stage: deploy
+  image: alpine:3.20
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+  script:
+    - apk add --no-cache git
+    - 'sed -i "s|^\( *\)image: .*/artex:.*|\1image: ${IMAGE}:${CI_COMMIT_SHORT_SHA}|" k8s/artex.yaml'
+    - git config user.name "gitlab-ci"
+    - git config user.email "gitlab-ci@invalid.local"
+    - git add k8s/artex.yaml
+    - git commit -m "deploy artex ${CI_COMMIT_SHORT_SHA} [skip ci]" || { echo "image tag 沒變，跳過"; exit 0; }
+    - git push "https://oauth2:${PUSH_TOKEN}@${CI_SERVER_HOST}/${CI_PROJECT_PATH}.git" "HEAD:${CI_DEFAULT_BRANCH}"
+
+# ── kaniko 版 build（runner 沒有 dind 時改用這個，並刪掉上面的 build-image）──
+# build-image:
+#   stage: build
+#   image:
+#     name: gcr.io/kaniko-project/executor:v1.23.2-debug
+#     entrypoint: [""]
+#   rules:
+#     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+#   script:
+#     - mkdir -p /kaniko/.docker
+#     - auth="$(printf '%s:%s' "$HARBOR_USER" "$HARBOR_PASSWORD" | base64 | tr -d '\n')"
+#     - printf '{"auths":{"%s":{"auth":"%s"}}}' "$HARBOR_HOST" "$auth" > /kaniko/.docker/config.json
+#     - /kaniko/executor --context "$CI_PROJECT_DIR" --dockerfile Dockerfile
+#         --build-arg ARTEX_VERSION="$CI_COMMIT_SHORT_SHA"
+#         --destination "$IMAGE:$CI_COMMIT_SHORT_SHA"
