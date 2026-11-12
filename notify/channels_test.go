@@ -154,7 +154,7 @@ func TestWeComRateLimitIsRetryableButKeyErrorIsPermanent(t *testing.T) {
 }
 
 func TestFeishuCardStructureAndSign(t *testing.T) {
-	const secret = "SECtest123"
+	const temp_s = "TempTest123"
 	srv := capturePost(t, `{"code":0,"msg":"success"}`, func(t *testing.T, body map[string]any, _ *http.Request) {
 		if body["msg_type"] != "interactive" {
 			t.Fatalf("should send an interactive card, got %v", body["msg_type"])
@@ -190,7 +190,7 @@ func TestFeishuCardStructureAndSign(t *testing.T) {
 			t.Fatal("no button pointing to the detail page in the card")
 		}
 	})
-	cfg := map[string]any{"webhook": srv.URL, "secret": secret}
+	cfg := map[string]any{"webhook": srv.URL, "secret": temp_s}
 	if _, err := (feishuChannel{}).Send(context.Background(), cfg, singleMsg()); err != nil {
 		t.Fatalf("delivery failed: %v", err)
 	}
