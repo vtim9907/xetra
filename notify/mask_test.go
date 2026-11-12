@@ -7,8 +7,8 @@ import (
 )
 
 func TestMaskedValueHidesBodyButKeepsTailHint(t *testing.T) {
-	const secret = "https://oapi.dingtalk.com/robot/send?access_token=abcdef123456"
-	got := MaskedValue(secret)
+	const temp_surl = "https://oapi.dingtalk.com/robot/send?access_token=abcdef123456"
+	got := MaskedValue(temp_surl)
 	if strings.Contains(got, "abcdef123456") {
 		t.Fatalf("masked value leaked the full credential: %q", got)
 	}
